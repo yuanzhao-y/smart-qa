@@ -1,0 +1,36 @@
+# Web framework
+fastapi>=0.115.0
+uvicorn>=0.30.0
+
+# Document parsing
+PyPDF2>=3.0.0
+python-docx>=1.1.0
+lxml>=5.0.0
+mammoth>=1.8.0
+pymupdf>=1.24.0
+
+# OCR (for scanned PDFs)
+paddlepaddle>=2.6.0
+paddleocr>=2.8.0
+
+# Embeddings
+sentence-transformers>=3.0.0
+
+# Vector database
+chromadb>=0.5.0
+
+# LLM API
+openai>=1.50.0
+
+# Frontend
+streamlit>=1.38.0
+
+# Knowledge graph
+networkx>=3.0
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
+tenacity>=8.0.0
+jieba>=0.42.0

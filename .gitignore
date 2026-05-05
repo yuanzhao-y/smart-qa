@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.env
+data/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.streamlit/
+node_modules/
+.claude/
+.sisyphus/
+*.ps1
+test_doc.txt
+package.json
+package-lock.json
