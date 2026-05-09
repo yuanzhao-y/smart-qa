@@ -51,13 +51,15 @@ def _merge_small_chunks(texts: list[str], chunk_size: int) -> list[str]:
 def split_texts(pages: list[dict]) -> list[dict]:
     """Split page-level documents into coherent chunks.
 
-    Strategy (no overlap to avoid confusing repetition):
+    Strategy:
     1. Split by paragraphs (double newline)
     2. Merge consecutive small paragraphs up to chunk_size
     3. If a single paragraph is too long, split by sentences
-    4. If a single sentence is still too long, split by punctuation (。！？；)
+    4. If a single sentence is still too long, split by punctuation
+    5. Add overlap between consecutive chunks to preserve context
     """
     chunk_size = settings.chunk_size
+    overlap = settings.chunk_overlap
 
     # Ordered separators: paragraph -> sentence -> clause
     separators = [
@@ -94,10 +96,8 @@ def split_texts(pages: list[dict]) -> list[dict]:
             if len(part) <= chunk_size:
                 final_parts.append(part)
             else:
-                # Force cut at chunk_size, try to find a nearby break point
                 while len(part) > chunk_size:
                     cut = chunk_size
-                    # Look for a break point near the cut position
                     for sep in ["。", "！", "？", "；", ".", "!", "?", "；", "，", ","]:
                         pos = part.rfind(sep, chunk_size // 2, chunk_size)
                         if pos != -1:
@@ -108,12 +108,22 @@ def split_texts(pages: list[dict]) -> list[dict]:
                 if part:
                     final_parts.append(part)
 
-        # Step 4: Build chunk objects
+        # Step 4: Build chunk objects with overlap
+        prev_tail = ""
         for idx, chunk_text in enumerate(final_parts):
-            if chunk_text:
-                chunks.append({
-                    "content": chunk_text,
-                    "metadata": {**metadata, "chunk_index": idx}
-                })
+            if not chunk_text:
+                continue
+            # Prepend tail of previous chunk for context continuity
+            if overlap > 0 and prev_tail:
+                content = prev_tail + "\n" + chunk_text
+            else:
+                content = chunk_text
+            chunks.append({
+                "content": content,
+                "metadata": {**metadata, "chunk_index": idx}
+            })
+            # Save tail for next chunk's overlap
+            if overlap > 0:
+                prev_tail = chunk_text[-overlap:] if len(chunk_text) > overlap else chunk_text
 
     return chunks

@@ -1,6 +1,7 @@
 """Vector store operations using ChromaDB."""
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -26,7 +27,7 @@ def _get_collection():
     if _collection is None:
         client = chromadb.PersistentClient(path=settings.chroma_persist_dir)
         _collection = client.get_or_create_collection(
-            name="documents",
+            name="docs_v2",
             metadata={"hnsw:space": "cosine"}
         )
     return _collection
@@ -124,6 +125,7 @@ def hybrid_search(query: str, top_k: int = None) -> list[dict]:
 
     Results are merged using Reciprocal Rank Fusion (RRF),
     then optionally reranked with a cross-encoder model.
+    Vector and BM25 searches run in parallel for lower latency.
     """
     if top_k is None:
         top_k = settings.top_k
@@ -131,8 +133,12 @@ def hybrid_search(query: str, top_k: int = None) -> list[dict]:
     # Get more candidates from each retriever for better fusion
     fetch_k = top_k * 2
 
-    vector_docs = vector_search(query, top_k=fetch_k)
-    bm25_docs = bm25_search.search(query, top_k=fetch_k)
+    # Run both searches in parallel
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_vector = executor.submit(vector_search, query, fetch_k)
+        future_bm25 = executor.submit(bm25_search.search, query, fetch_k)
+        vector_docs = future_vector.result()
+        bm25_docs = future_bm25.result()
 
     # Fuse results
     fused = _rrf_fuse(vector_docs, bm25_docs)

@@ -7,11 +7,14 @@ const chatContainer = $("#chatContainer");
 const messagesEl = $("#messages");
 const chatInput = $("#chatInput");
 const sendBtn = $("#sendBtn");
+const stopBtn = $("#stopBtn");
 const newChatBtn = $("#newChatBtn");
 const clearChatBtn = $("#clearChatBtn");
 const fileInput = $("#fileInput");
 const uploadArea = $("#uploadArea");
 const uploadStatus = $("#uploadStatus");
+const uploadProgress = $("#uploadProgress");
+const uploadProgressBar = $("#uploadProgressBar");
 const docList = $("#docList");
 const statsValue = $("#statsValue");
 const sidebar = $("#sidebar");
@@ -31,18 +34,42 @@ const summaryClose = $("#summaryClose");
 let messages = [];
 let isStreaming = false;
 let currentSessionId = null;
+let abortController = null;
+let genIndex = 1;  // current generation index for this question
 
-// Marked config
+// Marked config with code block wrapper
+const renderer = new marked.Renderer();
+const originalCodeRenderer = renderer.code;
+renderer.code = function(code, lang) {
+    const highlighted = (lang && hljs.getLanguage(lang))
+        ? hljs.highlight(code, { language: lang }).value
+        : hljs.highlightAuto(code).value;
+    return `<div class="code-block-wrapper"><button class="code-copy-btn" onclick="copyCode(this)" title="复制代码"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> 复制</button><pre><code class="hljs${lang ? ` language-${lang}` : ''}">${highlighted}</code></pre></div>`;
+};
+
 marked.setOptions({
-    highlight: (code, lang) => {
-        if (lang && hljs.getLanguage(lang)) {
-            return hljs.highlight(code, { language: lang }).value;
-        }
-        return hljs.highlightAuto(code).value;
-    },
+    renderer: renderer,
     breaks: true,
     gfm: true,
 });
+
+function copyCode(btn) {
+    const codeBlock = btn.parentElement.querySelector("code");
+    const text = codeBlock.textContent;
+    navigator.clipboard.writeText(text).then(() => {
+        btn.classList.add("copied");
+        btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> 已复制';
+        setTimeout(() => {
+            btn.classList.remove("copied");
+            btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> 复制';
+        }, 2000);
+    });
+}
+
+function formatTime(ts) {
+    const d = new Date(ts * 1000);
+    return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+}
 
 // ===== Session Management =====
 async function fetchSessions() {
@@ -126,12 +153,10 @@ async function renderHistoryList() {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
             </button>
         `;
-        // Click to load session
         item.addEventListener("click", (e) => {
             if (e.target.closest(".history-delete")) return;
             switchSession(s.id);
         });
-        // Delete button
         item.querySelector(".history-delete").addEventListener("click", async (e) => {
             e.stopPropagation();
             await deleteSession(s.id);
@@ -153,15 +178,15 @@ async function switchSession(sessionId) {
 
     currentSessionId = sessionId;
     messages = session.messages || [];
+    genIndex = 1;
 
-    // Render messages
     messagesEl.innerHTML = "";
     if (messages.length === 0) {
         showWelcome();
     } else {
         showChat();
         messages.forEach((m, i) => {
-            const msgData = { msgIdx: i, evaluation: m.evaluation, feedback: m.feedback };
+            const msgData = { msgIdx: i, evaluation: m.evaluation, feedback: m.feedback, timestamp: m.timestamp };
             renderMessage(m.role, m.content, msgData);
         });
     }
@@ -195,31 +220,43 @@ function renderMessage(role, content, msgData) {
         contentDiv.textContent = content;
     } else {
         contentDiv.innerHTML = parseCitations(marked.parse(content));
-        // Add evaluation bar if available
         if (msgData?.evaluation) {
             contentDiv.innerHTML += renderEvalBar(msgData.evaluation);
         }
-        // Add feedback buttons if available
         if (msgData?.msgIdx !== undefined) {
             contentDiv.innerHTML += renderFeedbackButtons(msgData.msgIdx, msgData?.feedback);
         }
     }
 
+    // Timestamp
+    const timeDiv = document.createElement("div");
+    timeDiv.className = "message-time";
+    timeDiv.textContent = msgData?.timestamp ? formatTime(msgData.timestamp) : formatTime(Date.now() / 1000);
+
+    const wrapper = document.createElement("div");
+    wrapper.style.display = "flex";
+    wrapper.style.flexDirection = "column";
+    wrapper.appendChild(contentDiv);
+    wrapper.appendChild(timeDiv);
+
     div.appendChild(avatar);
-    div.appendChild(contentDiv);
+    div.appendChild(wrapper);
     messagesEl.appendChild(div);
     scrollToBottom();
     return contentDiv;
 }
 
+let scrollRafId = null;
 function scrollToBottom() {
-    chatContainer.scrollTop = chatContainer.scrollHeight;
+    if (scrollRafId) return;
+    scrollRafId = requestAnimationFrame(() => {
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+        scrollRafId = null;
+    });
 }
 
 // ===== Citation Parsing =====
 function parseCitations(html) {
-    // Match patterns like: （来源：filename.pdf，第1页） or （来源：filename.pdf，第2段）
-    // Also match without page: （来源：filename.pdf）
     return html.replace(
         /（来源[：:]([^，）,)]+)(?:[，,]第(\d+)(?:页|段|部分)?)?）/g,
         (match, source, page) => {
@@ -233,14 +270,11 @@ function escapeHtmlAttr(text) {
     return text.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-// Delegate click handler for citation links
 document.addEventListener("click", (e) => {
     const link = e.target.closest(".citation-link");
     if (!link) return;
     const source = link.dataset.source;
-    if (source) {
-        openChunksForSource(source);
-    }
+    if (source) openChunksForSource(source);
 });
 
 async function openChunksForSource(source) {
@@ -279,32 +313,79 @@ function renderFeedbackButtons(messageIndex, existingFeedback) {
     const downClass = rating === -1 ? "active-down" : "";
     return `
         <div class="feedback-row">
-            <button class="feedback-btn ${upClass}" data-msg-idx="${messageIndex}" data-rating="1" title="有帮助">
-                👍
-            </button>
-            <button class="feedback-btn ${downClass}" data-msg-idx="${messageIndex}" data-rating="-1" title="没帮助">
-                👎
-            </button>
+            <button class="feedback-btn ${upClass}" data-msg-idx="${messageIndex}" data-rating="1" title="有帮助">👍</button>
+            <button class="feedback-btn ${downClass}" data-msg-idx="${messageIndex}" data-rating="-1" title="没帮助">👎</button>
         </div>
     `;
 }
 
+function renderActionButtons(messageIndex, question, existingFeedback, genIndex, genTotal) {
+    const rating = existingFeedback?.rating || 0;
+    const upClass = rating === 1 ? "active-up" : "";
+    const downClass = rating === -1 ? "active-down" : "";
+    const genLabel = genTotal > 1 ? `<span class="gen-label">${genIndex}/${genTotal}</span>` : "";
+    return `
+        <div class="action-row">
+            <button class="action-btn regenerate-btn" data-msg-idx="${messageIndex}" data-question="${escapeHtmlAttr(question)}" title="重新生成">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                <span>重新生成</span>${genLabel}
+            </button>
+            <div class="feedback-group">
+                <button class="feedback-btn ${upClass}" data-msg-idx="${messageIndex}" data-rating="1" title="有帮助">👍</button>
+                <button class="feedback-btn ${downClass}" data-msg-idx="${messageIndex}" data-rating="-1" title="没帮助">👎</button>
+            </div>
+        </div>
+    `;
+}
+
+function showStopBtn() {
+    sendBtn.style.display = "none";
+    stopBtn.style.display = "flex";
+}
+
+function hideStopBtn() {
+    stopBtn.style.display = "none";
+    sendBtn.style.display = "flex";
+}
+
+function stopGeneration() {
+    if (abortController) abortController.abort();
+}
+
+function regenerateMessage(msgIdx, question) {
+    if (isStreaming) return;
+    genIndex++;
+    // Remove old assistant message but keep user message
+    if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
+        messages.pop();
+        const msgEls = messagesEl.querySelectorAll(".message");
+        if (msgEls.length >= 1) {
+            msgEls[msgEls.length - 1].remove();
+        }
+    }
+    sendMessage(question, true);
+}
+
 document.addEventListener("click", async (e) => {
+    const regenBtn = e.target.closest(".regenerate-btn");
+    if (regenBtn) {
+        const question = regenBtn.dataset.question;
+        regenerateMessage(0, question);
+        return;
+    }
+
     const btn = e.target.closest(".feedback-btn");
     if (!btn) return;
     const msgIdx = parseInt(btn.dataset.msgIdx);
     const rating = parseInt(btn.dataset.rating);
     if (!currentSessionId || isNaN(msgIdx)) return;
 
-    // Toggle feedback
     const currentRating = messages[msgIdx]?.feedback?.rating || 0;
     const newRating = currentRating === rating ? 0 : rating;
 
-    // Update local state
     if (!messages[msgIdx].feedback) messages[msgIdx].feedback = {};
     messages[msgIdx].feedback.rating = newRating;
 
-    // Update UI
     const row = btn.closest(".feedback-row");
     row.querySelectorAll(".feedback-btn").forEach((b) => {
         b.classList.remove("active-up", "active-down");
@@ -312,7 +393,6 @@ document.addEventListener("click", async (e) => {
     if (newRating === 1) row.querySelector('[data-rating="1"]').classList.add("active-up");
     if (newRating === -1) row.querySelector('[data-rating="-1"]').classList.add("active-down");
 
-    // Save to backend
     try {
         await fetch(`${API}/feedback`, {
             method: "POST",
@@ -339,42 +419,60 @@ async function evaluateAnswer(question, answer, docs) {
     }
 }
 
-async function sendMessage(question) {
+async function sendMessage(question, isRegenerate = false) {
     if (!question.trim() || isStreaming) return;
 
+    if (!isRegenerate) genIndex = 1;
     isStreaming = true;
     sendBtn.disabled = true;
+    showStopBtn();
+    abortController = new AbortController();
 
-    // Ensure a session exists
     if (!currentSessionId) {
         const title = question.slice(0, 30) + (question.length > 30 ? "..." : "");
         const session = await createSession(title);
         if (session) currentSessionId = session.id;
     }
 
-    // Show chat view
     if (messages.length === 0) showChat();
 
-    // Add user message
-    messages.push({ role: "user", content: question });
-    renderMessage("user", question);
+    const now = Date.now() / 1000;
+    messages.push({ role: "user", content: question, timestamp: now });
+    renderMessage("user", question, { timestamp: now });
 
-    // Add AI placeholder
-    const aiDiv = renderMessage("assistant", "");
+    const aiDiv = renderMessage("assistant", "", { timestamp: now });
     aiDiv.classList.add("streaming-cursor");
     aiDiv.innerHTML = '<span class="typing-dots"><span>.</span><span>.</span><span>.</span></span>';
 
-    // Build history for backend
     const history = messages.slice(0, -1).map((m) => ({
         role: m.role,
         content: m.content,
     }));
+
+    let fullText = "";
+    let hasContent = false;
+    let renderScheduled = false;
+    let streamDone = false;
+
+    function scheduleRender() {
+        if (renderScheduled) return;
+        renderScheduled = true;
+        requestAnimationFrame(() => {
+            renderScheduled = false;
+            if (hasContent && !streamDone) {
+                aiDiv.innerHTML = marked.parse(fullText);
+                aiDiv.classList.add("streaming-cursor");
+            }
+            scrollToBottom();
+        });
+    }
 
     try {
         const resp = await fetch(`${API}/chat`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ question, history, stream: true }),
+            signal: abortController.signal,
         });
 
         if (!resp.ok) {
@@ -384,8 +482,6 @@ async function sendMessage(question) {
 
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
-        let fullText = "";
-        let hasContent = false;
 
         while (true) {
             const { done, value } = await reader.read();
@@ -394,55 +490,61 @@ async function sendMessage(question) {
             const chunk = decoder.decode(value, { stream: true });
             fullText += chunk;
 
-            // Keep typing dots until real content arrives
             if (!hasContent && fullText.trim()) {
                 hasContent = true;
                 aiDiv.innerHTML = "";
             }
-            if (hasContent) {
-                aiDiv.innerHTML = marked.parse(fullText);
-                aiDiv.classList.add("streaming-cursor");
-            }
-            scrollToBottom();
+            scheduleRender();
         }
 
+        streamDone = true;
         aiDiv.classList.remove("streaming-cursor");
         aiDiv.innerHTML = parseCitations(marked.parse(fullText || "(空回复)"));
-        messages.push({ role: "assistant", content: fullText });
+        messages.push({ role: "assistant", content: fullText, timestamp: Date.now() / 1000 });
 
         const msgIdx = messages.length - 1;
+        aiDiv.innerHTML += renderActionButtons(msgIdx, question, null, genIndex, genIndex);
 
-        // Add feedback buttons
-        aiDiv.innerHTML += renderFeedbackButtons(msgIdx, null);
-
-        // Trigger evaluation (non-blocking)
         evaluateAnswer(question, fullText, null).then((evalResult) => {
             if (evalResult && evalResult.overall > 0) {
                 messages[msgIdx].evaluation = evalResult;
-                // Insert eval bar before feedback buttons
-                const feedbackRow = aiDiv.querySelector(".feedback-row");
-                if (feedbackRow) {
-                    feedbackRow.insertAdjacentHTML("beforebegin", renderEvalBar(evalResult));
+                const actionRow = aiDiv.querySelector(".action-row");
+                if (actionRow) {
+                    actionRow.insertAdjacentHTML("beforebegin", renderEvalBar(evalResult));
                 }
-                // Auto-save with evaluation
-                if (currentSessionId) {
-                    saveSession(currentSessionId, messages);
-                }
+                if (currentSessionId) saveSession(currentSessionId, messages);
             }
         });
 
-        // Auto-save session
         if (currentSessionId) {
             saveSession(currentSessionId, messages);
             renderHistoryList();
         }
     } catch (err) {
+        streamDone = true;
         aiDiv.classList.remove("streaming-cursor");
-        aiDiv.innerHTML = `<span style="color:#ef4444">请求失败：${err.message}</span>`;
-        messages.push({ role: "assistant", content: `请求失败：${err.message}` });
+        if (err.name === "AbortError") {
+            if (fullText.trim()) {
+                aiDiv.innerHTML = parseCitations(marked.parse(fullText)) + '<div style="color:#f59e0b;font-size:13px;margin-top:8px;">已停止生成</div>';
+                messages.push({ role: "assistant", content: fullText, timestamp: Date.now() / 1000 });
+                const msgIdx = messages.length - 1;
+                aiDiv.innerHTML += renderActionButtons(msgIdx, question, null, genIndex, genIndex);
+            } else {
+                aiDiv.innerHTML = '<span style="color:#f59e0b">已停止生成</span>';
+            }
+        } else {
+            aiDiv.innerHTML = `<span style="color:#ef4444">请求失败：${err.message}</span>`;
+            messages.push({ role: "assistant", content: `请求失败：${err.message}`, timestamp: Date.now() / 1000 });
+        }
+        if (currentSessionId) {
+            saveSession(currentSessionId, messages);
+            renderHistoryList();
+        }
     }
 
+    abortController = null;
     isStreaming = false;
+    hideStopBtn();
     sendBtn.disabled = !chatInput.value.trim();
     chatInput.focus();
 }
@@ -475,6 +577,8 @@ sendBtn.addEventListener("click", () => {
     }
 });
 
+stopBtn.addEventListener("click", stopGeneration);
+
 // Quick actions
 document.querySelectorAll(".quick-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -487,6 +591,7 @@ document.querySelectorAll(".quick-btn").forEach((btn) => {
 function newChat() {
     currentSessionId = null;
     messages = [];
+    genIndex = 1;
     messagesEl.innerHTML = "";
     showWelcome();
     renderHistoryList();
@@ -546,7 +651,6 @@ async function fetchDocuments() {
             const item = document.createElement("div");
             item.className = "doc-item";
 
-            // Build meta line with optional doc type badge
             const typeBadge = doc.doc_type ? `<span class="doc-type-badge">${doc.doc_type}</span>` : "";
             const summaryPreview = doc.summary ? `<div class="doc-summary-preview">${doc.summary}</div>` : "";
 
@@ -582,24 +686,21 @@ async function fetchDocuments() {
     }
 }
 
-// Upload
+// Upload with progress animation
 uploadArea.addEventListener("click", () => fileInput.click());
 
 uploadArea.addEventListener("dragover", (e) => {
     e.preventDefault();
-    uploadArea.style.borderColor = "var(--accent)";
-    uploadArea.style.background = "rgba(59,130,246,.08)";
+    uploadArea.classList.add("dragover");
 });
 
 uploadArea.addEventListener("dragleave", () => {
-    uploadArea.style.borderColor = "";
-    uploadArea.style.background = "";
+    uploadArea.classList.remove("dragover");
 });
 
 uploadArea.addEventListener("drop", (e) => {
     e.preventDefault();
-    uploadArea.style.borderColor = "";
-    uploadArea.style.background = "";
+    uploadArea.classList.remove("dragover");
     if (e.dataTransfer.files.length > 0) {
         uploadFile(e.dataTransfer.files[0]);
     }
@@ -613,22 +714,36 @@ fileInput.addEventListener("change", () => {
 });
 
 async function uploadFile(file) {
-    uploadStatus.style.display = "block";
-    uploadStatus.className = "upload-status";
-    uploadStatus.textContent = "上传中...";
+    uploadStatus.style.display = "none";
+    uploadProgress.style.display = "block";
+    uploadProgressBar.style.width = "0%";
+
+    // Animate progress bar
+    let progress = 0;
+    const progressInterval = setInterval(() => {
+        progress = Math.min(progress + Math.random() * 15, 90);
+        uploadProgressBar.style.width = progress + "%";
+    }, 200);
 
     const form = new FormData();
     form.append("file", file);
 
     try {
         const resp = await fetch(`${API}/upload`, { method: "POST", body: form });
+        clearInterval(progressInterval);
+        uploadProgressBar.style.width = "100%";
+
+        setTimeout(() => {
+            uploadProgress.style.display = "none";
+            uploadStatus.style.display = "block";
+        }, 300);
+
         if (resp.ok) {
             const data = await resp.json();
             uploadStatus.className = "upload-status success";
             uploadStatus.textContent = `成功！${data.pages} 页，${data.chunks} 片段`;
             fetchStats();
             fetchDocuments();
-            // Show summary card if available
             if (data.summary && data.summary.summary) {
                 showSummaryCard(data.summary);
             }
@@ -638,6 +753,9 @@ async function uploadFile(file) {
             uploadStatus.textContent = `失败：${err}`;
         }
     } catch {
+        clearInterval(progressInterval);
+        uploadProgress.style.display = "none";
+        uploadStatus.style.display = "block";
         uploadStatus.className = "upload-status error";
         uploadStatus.textContent = "后端未连接";
     }
@@ -650,7 +768,6 @@ function showSummaryCard(summary) {
     summaryDocType.textContent = summary.doc_type || "文档";
     summaryText.textContent = summary.summary || "";
 
-    // Keywords
     summaryKeywords.innerHTML = "";
     (summary.keywords || []).forEach((kw) => {
         const tag = document.createElement("span");
@@ -659,7 +776,6 @@ function showSummaryCard(summary) {
         summaryKeywords.appendChild(tag);
     });
 
-    // Topics
     summaryTopics.innerHTML = "";
     (summary.topics || []).forEach((t) => {
         const div = document.createElement("div");
@@ -744,7 +860,6 @@ function renderChunks(data) {
         chunksBody.appendChild(card);
     });
 
-    // Pagination
     if (pages > 1) {
         let html = `<button class="page-btn" ${page <= 1 ? "disabled" : ""} onclick="loadChunks(${page - 1})">上一页</button>`;
         html += `<span class="page-info">${page} / ${pages}</span>`;

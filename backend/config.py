@@ -7,14 +7,15 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o-mini"
 
-    # Embedding model
-    embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
+    # Embedding model — use a strong Chinese model for better retrieval
+    embedding_model: str = "BAAI/bge-small-zh-v1.5"
 
     # Vector store
     chroma_persist_dir: str = "./data/chroma"
 
-    # Text splitting (no overlap to avoid confusing repetition)
+    # Text splitting
     chunk_size: int = 500
+    chunk_overlap: int = 50
     # Chunking strategy: "fixed" (separator-based) or "semantic" (embedding-based)
     chunk_strategy: str = "fixed"
 
