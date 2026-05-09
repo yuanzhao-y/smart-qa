@@ -31,11 +31,15 @@ const summaryText = $("#summaryText");
 const summaryKeywords = $("#summaryKeywords");
 const summaryTopics = $("#summaryTopics");
 const summaryClose = $("#summaryClose");
+const attachBtn = $("#attachBtn");
+const filePreview = $("#filePreview");
+const dragOverlay = $("#dragOverlay");
 let messages = [];
 let isStreaming = false;
 let currentSessionId = null;
 let abortController = null;
 let genIndex = 1;  // current generation index for this question
+let pendingFiles = [];  // files selected but not yet uploaded
 
 // Marked config with code block wrapper
 const renderer = new marked.Renderer();
@@ -422,6 +426,27 @@ async function evaluateAnswer(question, answer, docs) {
 async function sendMessage(question, isRegenerate = false) {
     if (!question.trim() || isStreaming) return;
 
+    // Upload pending files first
+    if (pendingFiles.length > 0) {
+        for (const file of pendingFiles) {
+            const form = new FormData();
+            form.append("file", file);
+            try {
+                const resp = await fetch(`${API}/upload`, { method: "POST", body: form });
+                if (resp.ok) {
+                    const data = await resp.json();
+                    fetchStats();
+                    fetchDocuments();
+                    if (data.summary && data.summary.summary) {
+                        showSummaryCard(data.summary);
+                    }
+                }
+            } catch {}
+        }
+        pendingFiles = [];
+        renderFilePreview();
+    }
+
     if (!isRegenerate) genIndex = 1;
     isStreaming = true;
     sendBtn.disabled = true;
@@ -706,10 +731,100 @@ uploadArea.addEventListener("drop", (e) => {
     }
 });
 
+let attachMode = false;  // true when fileInput triggered by attach button
+
 fileInput.addEventListener("change", () => {
     if (fileInput.files.length > 0) {
-        uploadFile(fileInput.files[0]);
+        if (attachMode) {
+            // Add to pending files
+            for (const file of fileInput.files) {
+                addPendingFile(file);
+            }
+        } else {
+            // Sidebar upload - direct upload
+            uploadFile(fileInput.files[0]);
+        }
         fileInput.value = "";
+        attachMode = false;
+    }
+});
+
+// ===== Attach Button & File Preview =====
+attachBtn.addEventListener("click", () => {
+    attachMode = true;
+    fileInput.click();
+});
+
+function addPendingFile(file) {
+    pendingFiles.push(file);
+    renderFilePreview();
+}
+
+function removePendingFile(index) {
+    pendingFiles.splice(index, 1);
+    renderFilePreview();
+}
+
+function renderFilePreview() {
+    if (pendingFiles.length === 0) {
+        filePreview.style.display = "none";
+        filePreview.innerHTML = "";
+        return;
+    }
+    filePreview.style.display = "flex";
+    filePreview.innerHTML = "";
+    pendingFiles.forEach((file, i) => {
+        const ext = file.name.split(".").pop().toLowerCase();
+        const icons = { pdf: "📕", docx: "📘", doc: "📘", txt: "📄", md: "📝" };
+        const icon = icons[ext] || "📄";
+        const chip = document.createElement("div");
+        chip.className = "file-chip";
+        chip.innerHTML = `
+            <span class="file-chip-icon">${icon}</span>
+            <span class="file-chip-name" title="${file.name}">${file.name}</span>
+            <span class="file-chip-size">${formatSize(file.size)}</span>
+            <button class="file-chip-remove" data-index="${i}" title="移除">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        `;
+        chip.querySelector(".file-chip-remove").addEventListener("click", () => removePendingFile(i));
+        filePreview.appendChild(chip);
+    });
+}
+
+// Override uploadFile to also support pending files from attach button
+const _originalUploadFile = uploadFile;
+
+// ===== Full-screen Drag Overlay =====
+let dragCounter = 0;
+
+document.addEventListener("dragenter", (e) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes("Files")) {
+        dragCounter++;
+        if (dragCounter === 1) dragOverlay.style.display = "flex";
+    }
+});
+
+document.addEventListener("dragover", (e) => {
+    e.preventDefault();
+});
+
+document.addEventListener("dragleave", (e) => {
+    e.preventDefault();
+    dragCounter--;
+    if (dragCounter === 0) dragOverlay.style.display = "none";
+});
+
+document.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dragCounter = 0;
+    dragOverlay.style.display = "none";
+    if (e.dataTransfer.files.length > 0) {
+        // Add to pending files instead of uploading directly
+        for (const file of e.dataTransfer.files) {
+            addPendingFile(file);
+        }
     }
 });
 

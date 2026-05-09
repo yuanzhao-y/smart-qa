@@ -6,7 +6,7 @@
 
 ### 核心 RAG
 - 支持 PDF（含扫描件 OCR）、DOCX（含文本框/表格）、TXT、Markdown 文档上传
-- 混合检索：向量语义检索 + BM25 关键词检索 + RRF 融合 + CrossEncoder 重排序
+- 混合检索：向量语义检索 + BM25 关键词检索 + RRF 融合 + CrossEncoder 重排序（并行执行）
 - HyDE 查询改写（简单问题自动跳过）
 - 大模型流式回答并附带来源引用
 - 多轮对话 + 会话管理（历史记录持久化）
@@ -19,7 +19,11 @@
 - **自适应切片**：可选语义切片策略，基于 embedding 相似度找自然断点
 
 ### 前端
-- 仿 DeepSeek 风格现代聊天界面
+- 仿 DeepSeek 风格深色主题聊天界面
+- 流式输出使用 rAF 节流，长文本不卡顿
+- 停止生成 + 重新生成（显示生成次数）
+- 代码块一键复制
+- 消息时间戳、文件上传进度条
 - 知识库片段可视化查看
 - 文件去重上传，删除同步清除所有关联数据
 
@@ -30,7 +34,7 @@
 | 后端 | Python + FastAPI |
 | 前端 | 原生 HTML/CSS/JS |
 | 向量数据库 | ChromaDB |
-| Embedding | paraphrase-multilingual-MiniLM-L12-v2 |
+| Embedding | BAAI/bge-small-zh-v1.5（中文检索优化） |
 | BM25 检索 | rank-bm25 + jieba |
 | Rerank | BAAI/bge-reranker-base |
 | OCR | PaddleOCR（扫描件 PDF 自动识别） |
@@ -92,10 +96,10 @@ python run_frontend.py
 ```
 smart-qa/
 ├── backend/
-│   ├── main.py              # FastAPI 主应用
+│   ├── main.py              # FastAPI 主应用（路由注册）
 │   ├── config.py            # 配置管理
 │   ├── document_loader.py   # 文档解析（PDF/DOCX/TXT/MD + OCR）
-│   ├── text_splitter.py     # 固定切片
+│   ├── text_splitter.py     # 固定切片（含 overlap）
 │   ├── semantic_splitter.py # 语义切片
 │   ├── vector_store.py      # ChromaDB + 混合检索 + Rerank
 │   ├── bm25_search.py       # BM25 关键词检索
@@ -105,11 +109,16 @@ smart-qa/
 │   ├── summarizer.py        # 文档智能摘要
 │   ├── evaluator.py         # 答案质量评估
 │   ├── compressor.py        # 对话历史压缩
-│   └── logger.py            # 日志配置
+│   ├── logger.py            # 日志配置
+│   └── routes/              # 路由模块
+│       ├── documents.py     # 文档上传/列表/删除/摘要
+│       ├── chat.py          # 聊天/评估/反馈
+│       ├── sessions.py      # 会话 CRUD
+│       └── knowledge.py     # 知识库统计/片段
 ├── frontend/
 │   ├── index.html           # 主页面
 │   └── static/
-│       ├── css/style.css    # 样式
+│       ├── css/style.css    # 深色主题样式
 │       └── js/app.js        # 交互逻辑
 ├── data/
 │   ├── uploads/             # 上传文件
@@ -132,7 +141,7 @@ LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_MODEL=deepseek-v4-flash
 
 # Embedding 模型（可选）
-# EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+# EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
 
 # Reranker（可选）
 # ENABLE_RERANK=true
@@ -141,6 +150,7 @@ LLM_MODEL=deepseek-v4-flash
 
 # 切片策略（可选）
 # CHUNK_SIZE=500
+# CHUNK_OVERLAP=50
 # CHUNK_STRATEGY=fixed   # fixed 或 semantic
 ```
 
@@ -149,5 +159,5 @@ LLM_MODEL=deepseek-v4-flash
 - `.env` 包含 API Key，已在 `.gitignore` 中，切勿提交
 - 首次运行需联网下载模型
 - 扫描件 PDF 首次 OCR 会自动下载 PaddleOCR 模型（约 100MB）
-- 删除 `data/chroma/` 可清空知识库（需先停后端）
+- 切换 Embedding 模型后需清空 `data/chroma/` 或在 config.py 修改集合名
 - 日志文件在 `data/logs/smartqa.log`
